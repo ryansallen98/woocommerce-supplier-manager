@@ -17,3 +17,4 @@ require_once __DIR__ . '/Core/Plugin.php';
 require_once __DIR__ . '/Support/TemplateLoader.php';
 require_once __DIR__ . '/Support/TemplateTags.php';
 require_once __DIR__ . '/Accounts/SupplierProductsEndpoint.php';
+require_once __DIR__ . '/Admin/SupplierSettings.php';
