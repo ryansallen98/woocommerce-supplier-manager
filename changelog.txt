@@ -1,7 +1,17 @@
 *** Changelog ***
 
-= 1.0.1 - 2025-09-09 =
-* Fix - Fixed crashing bug with auto updater
+= 1.1.0 - 2025-09-09 =
+* Fix - Fixed bug where supplier price input was not rendering under product variations.
+* New - Added **Supplier Settings** page under WooCommerce admin.  
+* New - Ability to toggle **column visibility, sorting, and filter enable/disable** for the Supplier Orders table.  
+* New - Added **Help tab** and inline **accordion help box** with developer instructions and code examples.  
+* New - Plugin **Settings link** now appears directly on the Plugins page.  
+* Tweak - All columns (even hidden ones) are always available in the settings page, so they can be re-enabled.  
+* Tweak - Filters are now toggleable (on/off) without changing their type.  
+* Dev - Improved `wcsm_supplier_orders_columns` API to support 3rd-party columns with settings integration.  
 
 = 1.0.1 - 2025-09-09 =
-* First Release
+* Fix - Fixed crashing bug with auto updater.  
+
+= 1.0.0 - 2025-09-09 =
+* First release.  
