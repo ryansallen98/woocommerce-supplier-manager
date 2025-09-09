@@ -10,21 +10,19 @@ class Plugin
 	public static function init()
 	{
 		if (is_admin()) {
-			// Quick Edit must always be available (even during admin-ajax).
+			// Always available
 			\WCSM\Admin\Product\QuickEdit::init();
 			\WCSM\Admin\Orders\SupplierFulfilmentMetaBox::init();
 
-			// Load heavier product edit UI only on product screens.
+			// Product screens (normal page loads)
 			add_action('current_screen', function ($screen) {
-				if (!$screen || !isset($screen->id)) {
-					return;
-				}
-
-				if (in_array($screen->id, ['product', 'edit-product'], true)) {
+				if ($screen && isset($screen->id) && in_array($screen->id, ['product', 'edit-product'], true)) {
 					\WCSM\Admin\Product\SupplierField::init();
-					\WCSM\Admin\Product\SupplierPricing::init();
 				}
 			});
+
+
+			\WCSM\Admin\Product\SupplierPricing::init();
 		}
 
 		\WCSM\Emails\Mailer::init();
@@ -40,5 +38,3 @@ class Plugin
 		\WCSM\Frontend\Assets::init();
 	}
 }
-
-
