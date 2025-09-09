@@ -1,0 +1,54 @@
+/* Keep real table headers (avoid Woo "orders" stacked layout) */
+.woocommerce table.wcsm-supplier-products-table thead {
+  display: table-header-group;
+}
+
+/* Only force non-variation rows to display like normal */
+.woocommerce table.wcsm-supplier-products-table tbody tr:not(.wcsm-variation) {
+  display: table-row;
+}
+
+/* Variation rows are collapsed by default; JS toggles aria-hidden */
+.woocommerce table.wcsm-supplier-products-table tbody tr.wcsm-variation {
+  display: none;
+}
+.woocommerce table.wcsm-supplier-products-table tbody tr.wcsm-variation[aria-hidden="false"] {
+  display: table-row;
+}
+
+/* Toggle button */
+.wcsm-supplier-products .wcsm-toggle.button {
+  margin-right: .5rem;
+  padding: .2rem .5rem;
+  line-height: 1.2;
+  font-size: 12px;
+  vertical-align: middle;
+}
+.wcsm-supplier-products .wcsm-toggle .wcsm-toggle-icon {
+  font-weight: 700;
+}
+
+/* Make variations visually distinct */
+tr.wcsm-variation td {
+  background: #f8f9fb;
+  font-size: 13px;
+}
+.wcsm-variation .wcsm-variation-indent {
+  display: inline-block;
+  width: 1.25em;
+  color: #999;
+}
+
+/* Smaller thumbs for variations */
+.wcsm-variation .product-thumbnail img {
+  max-width: 40px;
+  height: auto;
+}
+
+/* Grouping line between parent and first variation */
+.wcsm-parent + .wcsm-variation td {
+  border-top: 1px solid #e5e7eb;
+}
+
+.wcsm-supplier-products-table td select { max-width: 220px; }
+.wcsm-supplier-products-table td.product-qty input[type="number"] { max-width: 90px; }
