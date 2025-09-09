@@ -1,5 +1,7 @@
-v1.0.0 - 2025-09-09
-- Initial release.
+*** Changelog ***
 
-v1.0.1 - 2025-09-09
-- Fixed crashing bug with auto updater
+= 1.0.1 - 2025-09-09 =
+* Fix - Fixed crashing bug with auto updater
+
+= 1.0.1 - 2025-09-09 =
+* First Release
