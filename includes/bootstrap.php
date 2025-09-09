@@ -15,15 +15,20 @@ require_once __DIR__ . '/autoload.php';
 // Start plugin core
 \WCSM\Core\Plugin::init();
 
-// Build the update checker instance.
-$updateChecker = Puc_v4_Factory::buildUpdateChecker(
-    'https://github.com/ryansallen98/woocommerce-supplier-manager/',
-    __FILE__,                                                        
-    'woocommerce-supplier-manager'                                  
-);
+// GitHub updates via Plugin Update Checker (v5)
+if ( is_admin() ) {
+    // v5 is namespaced. No "use" at top? You can reference it as a string:
+    $factoryClass = 'YahnisElsts\\PluginUpdateChecker\\v5\\PucFactory';
 
-// If your primary branch is "main" (default is "master"):
-$updateChecker->setBranch('main');
+    if ( class_exists( $factoryClass ) ) {
+        $updateChecker = $factoryClass::buildUpdateChecker(
+            'https://github.com/ryansallen98/woocommerce-supplier-manager/',
+            WCSM_FILE,                             // main plugin file constant
+            'woocommerce-supplier-manager'         // plugin slug
+        );
 
-// Optional: if you publish release assets (.zip) on GitHub Releases:
-$updateChecker->getVcsApi()->enableReleaseAssets();
+        $updateChecker->setBranch('main');
+        $updateChecker->getVcsApi()->enableReleaseAssets();
+        // $updateChecker->setAuthentication('ghp_xxx'); // if repo is private
+    }
+}
