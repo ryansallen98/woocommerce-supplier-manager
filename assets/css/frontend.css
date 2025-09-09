@@ -52,3 +52,10 @@ tr.wcsm-variation td {
 
 .wcsm-supplier-products-table td select { max-width: 220px; }
 .wcsm-supplier-products-table td.product-qty input[type="number"] { max-width: 90px; }
+
+
+.wcsm-order-items { margin: 0; padding-left: 1.2em; list-style: disc; }
+.wcsm-order-items > li { margin: .25em 0; }
+.wcsm-item-meta { margin: .2em 0 0 .9em; list-style: circle; }
+
+
