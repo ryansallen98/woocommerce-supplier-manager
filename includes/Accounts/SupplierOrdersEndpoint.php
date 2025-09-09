@@ -56,39 +56,36 @@ class SupplierOrdersEndpoint {
 		}
 
 		// ---------- Controls ----------
+		$columns = \WCSM\Support\OrdersTable::get_columns();
+
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$raw     = wp_unslash( $_GET );
+
+		// Legacy controls (backward compatible)
 		$status  = isset( $raw['status'] ) ? sanitize_text_field( $raw['status'] ) : 'any'; // any|pending|received|sent|rejected
 		$paged   = isset( $raw['paged'] ) ? max( 1, (int) $raw['paged'] ) : 1;
 		$perpage = isset( $raw['per_page'] ) ? max( 1, min( 50, (int) $raw['per_page'] ) ) : 10;
 		$q       = isset( $raw['wcsm_q'] ) ? sanitize_text_field( $raw['wcsm_q'] ) : '';
 
-		// Date range (strict YYYY-MM-DD); force single strings even if arrays were sent.
+		// New generic column-driven controls
+		$filter_in = ( isset( $raw['wcsm_f'] ) && is_array( $raw['wcsm_f'] ) ) ? $raw['wcsm_f'] : [];
+		$sort_by   = isset( $raw['wcsm_sort'] ) ? sanitize_key( $raw['wcsm_sort'] ) : '';
+		$sort_dir  = isset( $raw['wcsm_dir'] ) && strtolower( $raw['wcsm_dir'] ) === 'desc' ? 'desc' : 'asc';
+
+		// Date range (legacy UI or wcsm_f['order-date'])
 		$from_raw = $raw['wcsm_from'] ?? '';
-		$to_raw   = $raw['wcsm_to'] ?? '';
+		$to_raw   = $raw['wcsm_to']   ?? '';
+
+		if ( isset( $filter_in['order-date'] ) && is_array( $filter_in['order-date'] ) ) {
+			$from_raw = $filter_in['order-date']['min'] ?? $from_raw;
+			$to_raw   = $filter_in['order-date']['max'] ?? $to_raw;
+		}
 
 		if ( is_array( $from_raw ) ) { $from_raw = reset( $from_raw ); }
 		if ( is_array( $to_raw ) )   { $to_raw   = reset( $to_raw ); }
 
 		$from = ( is_string( $from_raw ) && preg_match( '/^\d{4}-\d{2}-\d{2}$/', $from_raw ) ) ? $from_raw : '';
 		$to   = ( is_string( $to_raw )   && preg_match( '/^\d{4}-\d{2}-\d{2}$/', $to_raw ) )   ? $to_raw   : '';
-
-		// Build a date_query for HPOS-compatible ranges.
-		$date_query = [];
-		if ( $from ) {
-			$date_query[] = [
-				'column'    => 'date_created',     // or 'date_created_gmt'
-				'after'     => $from . ' 00:00:00',
-				'inclusive' => true,
-			];
-		}
-		if ( $to ) {
-			$date_query[] = [
-				'column'    => 'date_created',
-				'before'    => $to . ' 23:59:59',
-				'inclusive' => true,
-			];
-		}
 
 		// ---------- Order query base ----------
 		$args = [
@@ -108,94 +105,211 @@ class SupplierOrdersEndpoint {
 			'order'      => 'DESC',
 		];
 
-		if ( ! empty( $date_query ) ) {
+		// HPOS-safe date query
+		$date_query = [];
+		if ( $from ) {
+			$date_query[] = [
+				'column'    => 'date_created',
+				'after'     => $from . ' 00:00:00',
+				'inclusive' => true,
+			];
+		}
+		if ( $to ) {
+			$date_query[] = [
+				'column'    => 'date_created',
+				'before'    => $to . ' 23:59:59',
+				'inclusive' => true,
+			];
+		}
+		if ( $date_query ) {
 			$args['date_query'] = array_merge( [ 'relation' => 'AND' ], $date_query );
 		}
 
-		// ----- Search: build matching IDs (fields + line items), then manual paginate -----
-		$matching_ids = null;
+		// ---------- Decide manual filtering/sorting ----------
+		$needs_manual = false;
 
-		if ( '' !== $q ) {
-			$needle = ltrim( trim( $q ), '#' );
+		// non-date filters present?
+		foreach ( (array) $filter_in as $key => $val ) {
+			if ( $key === 'order-date' ) { continue; }
+			if ( $val === '' || $val === [] ) { continue; }
+			$needs_manual = true; break;
+		}
+		// sorting by custom column?
+		if ( $sort_by && isset( $columns[ $sort_by ] ) && $sort_by !== 'order-date' ) {
+			$needs_manual = true;
+		}
+		// fulfilment status filter requires in-PHP filter
+		if ( in_array( $status, [ 'pending', 'received', 'sent', 'rejected' ], true ) ) {
+			$needs_manual = true;
+		}
+		// free-form search requires manual work too
+		if ( $q !== '' ) {
+			$needs_manual = true;
+		}
 
-			// A) IDs that match order fields (respect supplier/date filter)
-			$field_search_args = $args;
-			$field_search_args['limit']          = -1;
-			$field_search_args['paginate']       = false;
-			$field_search_args['return']         = 'ids';
-			$field_search_args['search']         = $needle;
-			$field_search_args['search_columns'] = [
-				'id',
-				'billing_first_name',
-				'billing_last_name',
-				'billing_email',
-				'billing_company',
-				'billing_phone',
-				'order_key',
-			];
-			$field_ids = wc_get_orders( $field_search_args );
+		// Small helpers
+		$get_raw = static function( $col_def, \WC_Order $o ) {
+			return is_callable( $col_def['value'] ?? null ) ? call_user_func( $col_def['value'], $o ) : '';
+		};
+		$cmp_scalar = static function( $a, $b ): int {
+			if ( $a == $b ) { return 0; } // phpcs:ignore Universal.Operators.StrictComparisons.LooseEqual
+			return ( $a < $b ) ? -1 : 1;
+		};
 
-			// B) IDs that match line-item names
-			global $wpdb;
-			$like  = '%' . $wpdb->esc_like( $needle ) . '%';
-			$table = $wpdb->prefix . 'woocommerce_order_items';
-			$item_ids = $wpdb->get_col(
-				$wpdb->prepare(
-					"SELECT DISTINCT order_id
-					 FROM {$table}
-					 WHERE order_item_type = 'line_item'
-					   AND order_item_name LIKE %s",
-					$like
-				)
-			);
-
-			// Candidate IDs respecting supplier/date (cheap ids-only query)
+		// ---------- Fetch & Filter ----------
+		if ( $needs_manual ) {
+			// Pull candidates by supplier/date only (cheap pre-filter)
 			$candidate_args = $args;
 			$candidate_args['limit']    = -1;
 			$candidate_args['paginate'] = false;
-			$candidate_args['return']   = 'ids';
+			$candidate_args['return']   = 'objects';
 			unset( $candidate_args['orderby'], $candidate_args['order'] );
-			$candidate_ids = wc_get_orders( $candidate_args );
 
-			// Union (fields ∪ items) ∩ candidates
-			$union_ids    = array_unique( array_map( 'intval', array_merge( $field_ids ?: [], $item_ids ?: [] ) ) );
-			$matching_ids = array_values( array_intersect( $candidate_ids ?: [], $union_ids ) );
+			$orders = wc_get_orders( $candidate_args );
+			$orders = is_array( $orders ) ? $orders : [];
 
-			if ( empty( $matching_ids ) ) {
-				$matching_ids = [ 0 ]; // short-circuit to empty
+			// A) Legacy text search (id/billing + item names)
+			if ( $q !== '' ) {
+				$needle = ltrim( trim( $q ), '#' );
+				$orders = array_values( array_filter(
+					$orders,
+					static function( $o ) use ( $needle ) {
+						// match fields
+						$field_hit = false;
+						$field_hit = $field_hit || stripos( (string) $o->get_id(), $needle ) !== false;
+						$field_hit = $field_hit || stripos( (string) $o->get_billing_first_name(), $needle ) !== false;
+						$field_hit = $field_hit || stripos( (string) $o->get_billing_last_name(), $needle ) !== false;
+						$field_hit = $field_hit || stripos( (string) $o->get_billing_email(), $needle ) !== false;
+						$field_hit = $field_hit || stripos( (string) $o->get_billing_company(), $needle ) !== false;
+						$field_hit = $field_hit || stripos( (string) $o->get_billing_phone(), $needle ) !== false;
+
+						// match line items names
+						if ( ! $field_hit ) {
+							foreach ( $o->get_items( 'line_item' ) as $li ) {
+								if ( stripos( $li->get_name(), $needle ) !== false ) {
+									$field_hit = true; break;
+								}
+							}
+						}
+						return $field_hit;
+					}
+				) );
 			}
-		}
 
-		// ----- Final fetch -----
-		if ( $matching_ids !== null ) {
-			// Order all matching by date desc
-			$all_orders = wc_get_orders( [
-				'include'  => $matching_ids,
-				'limit'    => -1,
-				'paginate' => false,
-				'orderby'  => 'date',
-				'order'    => 'DESC',
-				'type'     => 'shop_order',
-			] );
-			$ordered_ids = array_map( static function( $o ) { return (int) $o->get_id(); }, $all_orders );
+			// B) Supplier-fulfilment status (pending/received/sent/rejected)
+			if ( in_array( $status, [ 'pending', 'received', 'sent', 'rejected' ], true ) ) {
+				$orders = array_values(
+					array_filter(
+						$orders,
+						static function ( $order ) use ( $supplier_id, $status ) {
+							$ff = Utils::get_fulfilment( $order );
+							return isset( $ff[ $supplier_id ]['status'] )
+								? ( $ff[ $supplier_id ]['status'] === $status )
+								: ( $status === 'pending' ); // no record => treat as pending
+						}
+					)
+				);
+			}
 
-			// Manual pagination
-			$total     = count( $ordered_ids );
+			// C) New column-driven filters wcsm_f[<key>]...
+			foreach ( (array) $filter_in as $key => $needle ) {
+				if ( $key === 'order-date' ) { continue; } // already in date_query
+				if ( ! isset( $columns[ $key ] ) ) { continue; }
+				$col = $columns[ $key ];
+				if ( empty( $col['filterable'] ) ) { continue; }
+
+				$mode = $col['filterable'];
+				$type = $col['type'] ?? 'text';
+
+				$orders = array_values( array_filter(
+					$orders,
+					static function( $o ) use ( $col, $mode, $type, $needle, $get_raw ) {
+						$raw = $get_raw( $col, $o );
+
+						if ( $mode === 'enum' ) {
+							$val = is_string( $needle ) ? $needle : '';
+							return $val === '' ? true : ( (string) $raw === $val );
+						}
+
+						if ( $mode === 'range' ) {
+							$min = is_array( $needle ) ? ( $needle['min'] ?? '' ) : '';
+							$max = is_array( $needle ) ? ( $needle['max'] ?? '' ) : '';
+
+							if ( $type === 'date' ) {
+								$ts = $raw instanceof \WC_DateTime ? $raw->getTimestamp() : ( is_numeric( $raw ) ? (int) $raw : 0 );
+								$ok = true;
+								if ( $min && preg_match( '/^\d{4}-\d{2}-\d{2}$/', $min ) ) {
+									$ok = $ok && ( $ts >= strtotime( $min . ' 00:00:00' ) );
+								}
+								if ( $max && preg_match( '/^\d{4}-\d{2}-\d{2}$/', $max ) ) {
+									$ok = $ok && ( $ts <= strtotime( $max . ' 23:59:59' ) );
+								}
+								return $ok;
+							}
+
+							$val = (float) wc_format_decimal( (string) $raw );
+							$ok  = true;
+							if ( $min !== '' ) { $ok = $ok && ( $val >= (float) wc_format_decimal( (string) $min ) ); }
+							if ( $max !== '' ) { $ok = $ok && ( $val <= (float) wc_format_decimal( (string) $max ) ); }
+							return $ok;
+						}
+
+						// search (or generic true)
+						$hay = is_scalar( $raw ) ? (string) $raw : '';
+						$nd  = is_string( $needle ) ? $needle : '';
+						return $nd === '' ? true : ( stripos( $hay, $nd ) !== false );
+					}
+				) );
+			}
+
+			// D) Sorting
+			if ( $sort_by && isset( $columns[ $sort_by ] ) ) {
+				$col = $columns[ $sort_by ];
+				usort(
+					$orders,
+					static function( $a, $b ) use ( $col, $get_raw, $cmp_scalar, $sort_dir ) {
+						$ra = $get_raw( $col, $a );
+						$rb = $get_raw( $col, $b );
+
+						$type   = $col['type']   ?? 'text';
+						$format = $col['format'] ?? '';
+
+						// Normalize by type/format
+						if ( $type === 'date' ) {
+							$ra = $ra instanceof \WC_DateTime ? $ra->getTimestamp() : ( is_numeric( $ra ) ? (int) $ra : 0 );
+							$rb = $rb instanceof \WC_DateTime ? $rb->getTimestamp() : ( is_numeric( $rb ) ? (int) $rb : 0 );
+						} elseif ( $type === 'number' || $format === 'price' || $format === 'number' ) {
+							$ra = (float) wc_format_decimal( (string) $ra );
+							$rb = (float) wc_format_decimal( (string) $rb );
+						} else {
+							$ra = (string) $ra;
+							$rb = (string) $rb;
+						}
+
+						$res = $cmp_scalar( $ra, $rb );
+						return ( $sort_dir === 'desc' ) ? -$res : $res;
+					}
+				);
+			} else {
+				// default by date desc (like original)
+				usort(
+					$orders,
+					static function( $a, $b ) use ( $cmp_scalar ) {
+						$ta = $a->get_date_created() ? $a->get_date_created()->getTimestamp() : 0;
+						$tb = $b->get_date_created() ? $b->get_date_created()->getTimestamp() : 0;
+						return - $cmp_scalar( $ta, $tb );
+					}
+				);
+			}
+
+			// E) Manual pagination
+			$total     = count( $orders );
 			$max_pages = max( 1, (int) ceil( $total / $perpage ) );
 			$offset    = ( $paged - 1 ) * $perpage;
-			$page_ids  = array_slice( $ordered_ids, $offset, $perpage );
-
-			$orders = wc_get_orders( [
-				'include'  => $page_ids ?: [ 0 ],
-				'limit'    => -1,
-				'paginate' => false,
-				'orderby'  => 'date',
-				'order'    => 'DESC',
-				'type'     => 'shop_order',
-			] );
+			$orders    = array_slice( $orders, $offset, $perpage );
 
 		} else {
-			// No search term -> normal paginated query
+			// Normal paginated query (no advanced filters/sorting)
 			$results   = wc_get_orders( $args );
 			$orders    = is_array( $results ) ? $results : ( $results->orders ?? [] );
 			$total     = is_array( $results ) ? count( $orders ) : ( $results->total ?? 0 );
@@ -206,29 +320,19 @@ class SupplierOrdersEndpoint {
 		if ( empty( $orders ) ) {
 			self::backfill_recent_orders_for_supplier( $supplier_id, 120 );
 
-			if ( $matching_ids !== null ) {
-				$all_orders = wc_get_orders( [
-					'include'  => $matching_ids,
-					'limit'    => -1,
-					'paginate' => false,
-					'orderby'  => 'date',
-					'order'    => 'DESC',
-					'type'     => 'shop_order',
-				] );
-				$ordered_ids = array_map( static function( $o ) { return (int) $o->get_id(); }, $all_orders );
-				$total       = count( $ordered_ids );
-				$max_pages   = max( 1, (int) ceil( $total / $perpage ) );
-				$offset      = ( $paged - 1 ) * $perpage;
-				$page_ids    = array_slice( $ordered_ids, $offset, $perpage );
+			if ( $needs_manual ) {
+				$candidate_args = $args;
+				$candidate_args['limit']    = -1;
+				$candidate_args['paginate'] = false;
+				$candidate_args['return']   = 'objects';
+				unset( $candidate_args['orderby'], $candidate_args['order'] );
+				$orders = wc_get_orders( $candidate_args );
+				$orders = is_array( $orders ) ? $orders : [];
 
-				$orders = wc_get_orders( [
-					'include'  => $page_ids ?: [ 0 ],
-					'limit'    => -1,
-					'paginate' => false,
-					'orderby'  => 'date',
-					'order'    => 'DESC',
-					'type'     => 'shop_order',
-				] );
+				$total     = count( $orders );
+				$max_pages = max( 1, (int) ceil( $total / $perpage ) );
+				$offset    = ( $paged - 1 ) * $perpage;
+				$orders    = array_slice( $orders, $offset, $perpage );
 			} else {
 				$results   = wc_get_orders( $args );
 				$orders    = is_array( $results ) ? $results : ( $results->orders ?? [] );
@@ -237,37 +341,33 @@ class SupplierOrdersEndpoint {
 			}
 		}
 
-		// Filter by supplier fulfilment status if requested (pending/received/sent/rejected).
-		if ( in_array( $status, [ 'pending', 'received', 'sent', 'rejected' ], true ) ) {
-			$orders = array_values(
-				array_filter(
-					$orders,
-					function ( $order ) use ( $supplier_id, $status ) {
-						$ff = Utils::get_fulfilment( $order );
-						if ( isset( $ff[ $supplier_id ]['status'] ) ) {
-							return $ff[ $supplier_id ]['status'] === $status;
-						}
-						// no record = treat as pending
-						return 'pending' === $status;
-					}
-				)
-			);
+		// ---------- Pagination base URL (preserve filters/sorting) ----------
+		$endpoint_url = wc_get_account_endpoint_url( self::ENDPOINT );
+
+		// Build wcsm_f param compactly (only non-empty parts)
+		$wcsm_f_clean = [];
+		foreach ( (array) $filter_in as $k => $v ) {
+			if ( $k === 'order-date' ) { continue; } // already split out to legacy from/to for nice URLs
+			if ( $v === '' || $v === [] ) { continue; }
+			$wcsm_f_clean[ $k ] = $v;
 		}
 
-		// Build pagination base
-		$endpoint_url = wc_get_account_endpoint_url( self::ENDPOINT );
-		$base_url     = add_query_arg(
-			array_filter(
-				[
-					'status'    => ( 'any' !== $status ) ? $status : null,
-					'wcsm_q'    => ( '' !== $q ) ? $q : null,
-					'per_page'  => ( 10 !== $perpage ) ? $perpage : null,
-					'wcsm_from' => ( '' !== $from ) ? $from : null,
-					'wcsm_to'   => ( '' !== $to ) ? $to : null,
-				]
-			),
-			$endpoint_url
+		$base_query = array_filter(
+			[
+				// legacy
+				'status'    => ( 'any' !== $status ) ? $status : null,
+				'wcsm_q'    => ( '' !== $q ) ? $q : null,
+				'per_page'  => ( 10 !== $perpage ) ? $perpage : null,
+				'wcsm_from' => ( '' !== $from ) ? $from : null,
+				'wcsm_to'   => ( '' !== $to ) ? $to : null,
+				// new
+				'wcsm_sort' => $sort_by ?: null,
+				'wcsm_dir'  => ( $sort_by && $sort_dir === 'desc' ) ? 'desc' : null,
+				'wcsm_f'    => ! empty( $wcsm_f_clean ) ? $wcsm_f_clean : null,
+			]
 		);
+
+		$base_url = add_query_arg( $base_query, $endpoint_url );
 
 		TemplateLoader::get(
 			'myaccount/supplier-orders.php',
@@ -280,12 +380,16 @@ class SupplierOrdersEndpoint {
 					'per_page'  => $perpage,
 					'wcsm_from' => $from,
 					'wcsm_to'   => $to,
+					// expose new bits to the template too (optional)
+					'wcsm_f'    => $filter_in,
+					'wcsm_sort' => $sort_by,
+					'wcsm_dir'  => $sort_dir,
 				],
 				'pagination'   => [
-					'current'    => $paged,
-					'total'      => $max_pages ?? 1,
-					'base'       => $base_url,
-					'total_items'=> isset( $total ) ? (int) $total : 0,
+					'current'     => $paged,
+					'total'       => $max_pages ?? 1,
+					'base'        => $base_url,
+					'total_items' => isset( $total ) ? (int) $total : 0,
 				],
 			]
 		);
@@ -326,7 +430,7 @@ class SupplierOrdersEndpoint {
 			return;
 		}
 
-		// Allowed statuses (includes 'rejected').
+		// Allowed statuses
 		// phpcs:ignore WordPress.Security.NonceVerification.Missing
 		$allowed_status = [ 'pending', 'received', 'sent', 'rejected' ];
 		$status = isset( $_POST['wcsm_status'] ) ? sanitize_text_field( $_POST['wcsm_status'] ) : 'pending';
@@ -343,9 +447,7 @@ class SupplierOrdersEndpoint {
 		$notes   = isset( $_POST['wcsm_notes'] ) ? sanitize_textarea_field( $_POST['wcsm_notes'] ) : '';
 
 		/**
-		 * >>> EMAIL TRIGGER SUPPORT <<<
-		 * Capture old state for this supplier, perform update, capture new state,
-		 * and fire an action so the Mailer can notify admins and attach the PDF.
+		 * Capture old state → update → capture new state → trigger mailer hook.
 		 */
 		$before_all = \WCSM\Orders\Utils::get_fulfilment( $order );
 		$old_for_me = $before_all[ $supplier_id ] ?? [];
@@ -362,17 +464,16 @@ class SupplierOrdersEndpoint {
 			]
 		);
 
-		$after_all = \WCSM\Orders\Utils::get_fulfilment( $order );
+		$after_all  = \WCSM\Orders\Utils::get_fulfilment( $order );
 		$new_for_me = $after_all[ $supplier_id ] ?? [];
 
 		/**
 		 * Fire: supplier changed their fulfilment in My Account.
-		 * Listeners (e.g., WCSM\Emails\Mailer) can email the admin and attach a PDF.
 		 *
 		 * @param \WC_Order $order
 		 * @param int       $supplier_id
-		 * @param array     $old (old fulfilment record for this supplier)
-		 * @param array     $new (new fulfilment record for this supplier)
+		 * @param array     $old
+		 * @param array     $new
 		 */
 		do_action( 'wcsm_supplier_fulfilment_changed_by_supplier', $order, (int) $supplier_id, (array) $old_for_me, (array) $new_for_me );
 
