@@ -17,18 +17,16 @@ require_once __DIR__ . '/autoload.php';
 
 // GitHub updates via Plugin Update Checker (v5)
 if ( is_admin() ) {
-    // v5 is namespaced. No "use" at top? You can reference it as a string:
     $factoryClass = 'YahnisElsts\\PluginUpdateChecker\\v5\\PucFactory';
 
     if ( class_exists( $factoryClass ) ) {
         $updateChecker = $factoryClass::buildUpdateChecker(
             'https://github.com/ryansallen98/woocommerce-supplier-manager/',
-            WCSM_FILE,                             // main plugin file constant
-            'woocommerce-supplier-manager'         // plugin slug
+            WCSM_FILE,                             
+            'woocommerce-supplier-manager'        
         );
 
         $updateChecker->setBranch('main');
         $updateChecker->getVcsApi()->enableReleaseAssets();
-        // $updateChecker->setAuthentication('ghp_xxx'); // if repo is private
     }
 }
