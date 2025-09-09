@@ -9,6 +9,7 @@
  * Requires Plugins: woocommerce
  * Text Domain: wc-supplier-manager
  * Domain Path: /languages
+ * Update URI: https://github.com/ryansallen98/woocommerce-supplier-manager
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
