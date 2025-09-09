@@ -49,8 +49,6 @@ This plugin also enhances communication by automatically notifying suppliers of 
 1. Ensure you have WooCommerce installed and active.  
 2. Upload the plugin files to `/wp-content/plugins/woocommerce-supplier-manager` or install via the WordPress plugin installer.  
 3. Activate the plugin through the **Plugins** menu in WordPress.  
-4. Go to **WooCommerce → Settings → Suppliers** to configure options (if applicable).  
-
 
 ## 🔧 Usage
 
