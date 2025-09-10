@@ -1,6 +1,6 @@
 # WooCommerce Supplier Manager
 
-**Version:** 1.1.0 
+**Version:** 1.1.1 
 **Author:** [Ryan Allen](https://github.com/ryansallen98)  
 **Requires:** [WooCommerce](https://woocommerce.com/)  
 
