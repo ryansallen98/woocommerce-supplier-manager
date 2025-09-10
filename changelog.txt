@@ -1,5 +1,9 @@
 *** Changelog ***
 
+= 1.1.1 - 2025-09-09 =
+* New - Filter by supplier in WP Admin products table
+* New - Supplier Column in WP Admin products table
+
 = 1.1.0 - 2025-09-09 =
 * Fix - Fixed bug where supplier price input was not rendering under product variations.
 * New - Added **Supplier Settings** page under WooCommerce admin.  
