@@ -1,6 +1,8 @@
 <?php
 namespace WCSM\Admin\Product;
 
+use WCSM\Admin\Settings\Options; // ← use the new formatter
+
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class SupplierField {
@@ -27,13 +29,14 @@ class SupplierField {
 
 		$users = get_users( [
 			'role'    => 'supplier',
-			'orderby' => 'display_name',
+			'orderby' => 'display_name', // ordering key only; the label below may differ per setting
 			'order'   => 'ASC',
-			'fields'  => [ 'ID', 'display_name', 'user_email' ],
+			// don't limit 'fields' so we have full WP_User objects available to the formatter
 		] );
 
 		foreach ( $users as $user ) {
-			$label = sprintf( '%s (%s)', $user->display_name ?: $user->user_email, $user->user_email );
+			// Use the global setting for how supplier names should appear in admin
+			$label = Options::format_supplier_name( $user );
 			$options[ $user->ID ] = $label;
 		}
 
@@ -44,12 +47,12 @@ class SupplierField {
 		echo '<div class="options_group">';
 
 		woocommerce_wp_select( [
-			'id'          => self::META_KEY,
-			'label'       => __( 'Supplier', 'wc-supplier-manager' ),
-			'description' => __( 'Assign this product to a supplier. Leave as “No supplier” if none.', 'wc-supplier-manager' ),
-			'desc_tip'    => true,
-			'options'     => $options,
-			'value'       => $selected,
+			'id'            => self::META_KEY,
+			'label'         => __( 'Supplier', 'wc-supplier-manager' ),
+			'description'   => __( 'Assign this product to a supplier. Leave as “No supplier” if none.', 'wc-supplier-manager' ),
+			'desc_tip'      => true,
+			'options'       => $options,
+			'value'         => $selected,
 			'wrapper_class' => 'form-field',
 		] );
 

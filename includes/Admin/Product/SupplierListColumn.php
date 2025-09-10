@@ -1,6 +1,8 @@
 <?php
 namespace WCSM\Admin\Product;
 
+use WCSM\Admin\Settings\Options;
+
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 class SupplierListColumn {
@@ -16,7 +18,7 @@ class SupplierListColumn {
 		add_action( 'manage_product_posts_custom_column', [ __CLASS__, 'render_column' ], 10, 2 );
 
 		add_filter( 'manage_edit-product_sortable_columns', [ __CLASS__, 'make_sortable' ] );
-		add_filter( 'posts_clauses', [ __CLASS__, 'sort_by_supplier_name' ], 10, 2 );
+		add_filter( 'posts_clauses', [ __CLASS__, 'sort_by_supplier' ], 10, 2 );
 
 		add_action( 'restrict_manage_posts', [ __CLASS__, 'add_filter_dropdown' ] );
 		add_action( 'pre_get_posts', [ __CLASS__, 'apply_supplier_filter' ] );
@@ -51,7 +53,7 @@ class SupplierListColumn {
 			return;
 		}
 
-		$display = $user->display_name ?: $user->user_login;
+		$display = Options::format_supplier_name( $user ); // ← use the chosen format
 
 		// Link display name to filter products by this supplier
 		$filter_link = esc_url( add_query_arg( [
@@ -59,11 +61,7 @@ class SupplierListColumn {
 			self::QUERY_VAR => $uid,
 		], admin_url( 'edit.php' ) ) );
 
-		printf(
-			'<a href="%s">%s</a>',
-			$filter_link,
-			esc_html( $display )
-		);
+		printf( '<a href="%s">%s</a>', $filter_link, esc_html( $display ) );
 	}
 
 	public static function make_sortable( array $cols ) : array {
@@ -71,15 +69,21 @@ class SupplierListColumn {
 		return $cols;
 	}
 
-	public static function sort_by_supplier_name( array $clauses, \WP_Query $q ) : array {
+	/**
+	 * Sorting that adapts to the selected supplier display format.
+	 * Joins postmeta->users, and when needed relevant usermeta.
+	 */
+	public static function sort_by_supplier( array $clauses, \WP_Query $q ) : array {
 		if ( ! is_admin() || ! $q->is_main_query() ) return $clauses;
 		if ( $q->get( 'post_type' ) !== 'product' ) return $clauses;
 		if ( $q->get( 'orderby' ) !== self::COL_KEY ) return $clauses;
 
 		global $wpdb;
+
 		$pm = 'pm_supplier';
 		$u  = 'u_supplier';
 
+		// Join product->supplier_id meta
 		if ( strpos( $clauses['join'], " {$wpdb->postmeta} {$pm} " ) === false ) {
 			$clauses['join'] .= $wpdb->prepare(
 				" LEFT JOIN {$wpdb->postmeta} {$pm}
@@ -87,15 +91,59 @@ class SupplierListColumn {
 				self::META_KEY
 			);
 		}
+
+		// Join users table
 		if ( strpos( $clauses['join'], " {$wpdb->users} {$u} " ) === false ) {
 			$clauses['join'] .= " LEFT JOIN {$wpdb->users} {$u} ON (CAST({$pm}.meta_value AS UNSIGNED) = {$u}.ID) ";
 		}
+
+		// Depending on the chosen format, optionally join usermeta
+		$fmt = Options::get_display_format();
+
+		$order = strtoupper( $q->get( 'order' ) ) === 'DESC' ? 'DESC' : 'ASC';
+		$orderby_expr = "{$u}.display_name {$order}"; // default fallback
+
+		if ( $fmt === 'username' ) {
+			$orderby_expr = "{$u}.user_login {$order}, {$u}.display_name {$order}";
+		}
+		elseif ( $fmt === 'email' ) {
+			$orderby_expr = "{$u}.user_email {$order}, {$u}.display_name {$order}";
+		}
+		elseif ( $fmt === 'company' ) {
+			$umc = 'um_company';
+			if ( strpos( $clauses['join'], " {$wpdb->usermeta} {$umc} " ) === false ) {
+				$clauses['join'] .= $wpdb->prepare(
+					" LEFT JOIN {$wpdb->usermeta} {$umc}
+					  ON ({$umc}.user_id = {$u}.ID AND {$umc}.meta_key = %s) ",
+					'_wcsm_company_name'
+				);
+			}
+			// Order by company if set, else by display_name
+			$orderby_expr = " COALESCE(NULLIF({$umc}.meta_value, ''), {$u}.display_name) {$order}, {$wpdb->posts}.ID {$order} ";
+		}
+		elseif ( $fmt === 'first_last' ) {
+			$umf = 'um_first';
+			$uml = 'um_last';
+			if ( strpos( $clauses['join'], " {$wpdb->usermeta} {$umf} " ) === false ) {
+				$clauses['join'] .= " LEFT JOIN {$wpdb->usermeta} {$umf} ON ({$umf}.user_id = {$u}.ID AND {$umf}.meta_key = 'first_name') ";
+			}
+			if ( strpos( $clauses['join'], " {$wpdb->usermeta} {$uml} " ) === false ) {
+				$clauses['join'] .= " LEFT JOIN {$wpdb->usermeta} {$uml} ON ({$uml}.user_id = {$u}.ID AND {$uml}.meta_key = 'last_name') ";
+			}
+			// Trim to avoid leading spaces when one part missing; fallback to display_name
+			$fullname = "NULLIF(TRIM(CONCAT(COALESCE({$umf}.meta_value,''),' ',COALESCE({$uml}.meta_value,''))), '')";
+			$orderby_expr = " COALESCE({$fullname}, {$u}.display_name) {$order}, {$wpdb->posts}.ID {$order} ";
+		}
+		else { // 'display_name' (default)
+			$orderby_expr = " {$u}.display_name {$order}, {$wpdb->posts}.ID {$order} ";
+		}
+
+		// Group to avoid duplicates from joins
 		if ( empty( $clauses['groupby'] ) ) {
 			$clauses['groupby'] = "{$wpdb->posts}.ID";
 		}
 
-		$order = strtoupper( $q->get( 'order' ) ) === 'DESC' ? 'DESC' : 'ASC';
-		$clauses['orderby'] = " {$u}.display_name {$order}, {$wpdb->posts}.ID {$order} ";
+		$clauses['orderby'] = $orderby_expr;
 
 		return $clauses;
 	}
@@ -111,11 +159,12 @@ class SupplierListColumn {
 		echo '<option value="0">' . esc_html__( 'All suppliers', 'wc-supplier-manager' ) . '</option>';
 
 		foreach ( $users as $u ) {
+			$label = Options::format_supplier_name( $u ); // ← use chosen format
 			printf(
 				'<option value="%d"%s>%s</option>',
 				(int) $u->ID,
 				selected( $selected, (int) $u->ID, false ),
-				esc_html( $u->display_name ?: $u->user_login )
+				esc_html( $label )
 			);
 		}
 
@@ -141,10 +190,10 @@ class SupplierListColumn {
 
 	protected static function get_supplier_users() : array {
 		$args = [
-			'orderby' => 'display_name',
+			'orderby' => 'display_name', // initial DB order; still show labels per your format
 			'order'   => 'ASC',
 			'number'  => 500,
-			'fields'  => [ 'ID', 'display_name', 'user_login' ],
+			// Get full objects so the formatter can read names/email/company meta as needed
 		];
 		if ( ! empty( self::SUPPLIER_ROLES ) ) {
 			$args['role__in'] = self::SUPPLIER_ROLES;
