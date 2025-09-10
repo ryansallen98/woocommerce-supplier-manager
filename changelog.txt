@@ -1,6 +1,9 @@
 *** Changelog ***
 
-= 1.2.0 - 2025-09-09 =
+= 1.2.1 - 2025-09-10 =
+* Fix - Fix crashing bug on supplier products dashboard page
+
+= 1.2.0 - 2025-09-10 =
 * New - Filter by supplier in WP Admin products table
 * New - Supplier Column in WP Admin products table
 
