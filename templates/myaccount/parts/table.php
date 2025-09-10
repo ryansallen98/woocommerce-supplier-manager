@@ -1,4 +1,6 @@
 <?php
+
+use WCSM\Support\TemplateLoader;
 /**
  * Table wrapper — thead + iterate rows
  *
