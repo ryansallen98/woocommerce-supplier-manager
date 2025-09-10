@@ -3,6 +3,7 @@ namespace WCSM\Accounts;
 
 use WCSM\Support\TemplateLoader;
 use WCSM\Orders\Utils;
+use WCSM\Admin\Settings\Tabs\OrdersDashboard;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
@@ -11,11 +12,21 @@ if ( ! defined( 'ABSPATH' ) ) {
 class SupplierOrdersEndpoint {
 	const ENDPOINT = 'supplier-orders';
 
+	// Fallbacks in case options are empty/missing (keeps legacy behaviour)
+	private const FALLBACK_VISIBLE_STATUSES = [ 'processing', 'on-hold', 'completed', 'cancelled', 'refunded' ];
+	private const FALLBACK_NOTIFY_STATUSES  = [ 'cancelled', 'refunded' ];
+
 	public static function init(): void {
 		add_action( 'init', [ __CLASS__, 'add_endpoint' ] );
 		add_filter( 'woocommerce_account_menu_items', [ __CLASS__, 'add_menu_item' ], 6 );
 		add_action( 'woocommerce_account_' . self::ENDPOINT . '_endpoint', [ __CLASS__, 'render_endpoint' ] );
 		add_action( 'template_redirect', [ __CLASS__, 'maybe_download_packing_slip' ] );
+
+		// Notify suppliers when order status changes (admin-controlled list)
+		add_action( 'woocommerce_order_status_changed', [ __CLASS__, 'maybe_notify_suppliers' ], 10, 4 );
+
+		// Clamp any column-provided order-status filter options to allowed set (belt & braces)
+		add_filter( 'wcsm_supplier_orders_columns', [ __CLASS__, 'limit_status_column_options' ], 40 );
 	}
 
 	public static function add_endpoint(): void {
@@ -43,6 +54,64 @@ class SupplierOrdersEndpoint {
 		return $new;
 	}
 
+	/** Helper: read admin-configured visible statuses with fallback */
+	private static function get_visible_statuses() : array {
+		if ( class_exists( OrdersDashboard::class ) ) {
+			$vis = OrdersDashboard::get_saved_visible_statuses();
+			if ( ! empty( $vis ) ) {
+				return array_values( array_unique( array_map( 'sanitize_key', $vis ) ) );
+			}
+		}
+		return self::FALLBACK_VISIBLE_STATUSES;
+	}
+
+	/** Helper: read admin-configured notify statuses with fallback */
+	private static function get_notify_statuses() : array {
+		if ( class_exists( OrdersDashboard::class ) ) {
+			$not = OrdersDashboard::get_saved_notify_statuses();
+			if ( ! empty( $not ) ) {
+				return array_values( array_unique( array_map( 'sanitize_key', $not ) ) );
+			}
+		}
+		return self::FALLBACK_NOTIFY_STATUSES;
+	}
+
+	/** Build allowed order-status choices for the template dropdown */
+	private static function get_supplier_status_choices() : array {
+		$allowed = self::get_visible_statuses();                  // slugs without 'wc-'
+		$all     = wc_get_order_statuses();                       // ['wc-processing' => 'Processing', ...]
+		$out     = [ 'any' => __( 'All confirmed statuses', 'wc-supplier-manager' ) ];
+
+		foreach ( $allowed as $slug ) {
+			$key        = 'wc-' . $slug;
+			$out[ $slug ] = $all[ $key ] ?? ucfirst( str_replace( '-', ' ', $slug ) );
+		}
+		return $out;
+	}
+
+	/**
+	 * Ensure any column that exposes an order-status filter only offers allowed statuses.
+	 * Runs on the Supplier Orders table columns definition.
+	 */
+	public static function limit_status_column_options( array $cols ) : array {
+		// Only apply on the front-end supplier endpoint
+		if ( ! function_exists( 'is_wc_endpoint_url' ) || ! is_account_page() || ! \is_wc_endpoint_url( self::ENDPOINT ) ) {
+			return $cols;
+		}
+
+		$choices  = self::get_supplier_status_choices(); // ['any' => ..., 'processing' => 'Processing', ...]
+		$filtered = $choices;
+		unset( $filtered['any'] ); // enum options do not include "any"
+
+		foreach ( [ 'order-status', 'status' ] as $k ) {
+			if ( isset( $cols[ $k ] ) ) {
+				$cols[ $k ]['filterable'] = 'enum';
+				$cols[ $k ]['options']    = $filtered; // [slug => label]
+			}
+		}
+		return $cols;
+	}
+
 	public static function render_endpoint(): void {
 		if ( ! self::current_user_is_supplierish() ) {
 			wc_print_notice( __( 'You do not have permission to view supplier orders.', 'wc-supplier-manager' ), 'error' );
@@ -61,13 +130,25 @@ class SupplierOrdersEndpoint {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended
 		$raw     = wp_unslash( $_GET );
 
-		// Legacy controls (backward compatible)
-		$status  = isset( $raw['status'] ) ? sanitize_text_field( $raw['status'] ) : 'any'; // any|pending|received|sent|rejected
+		// Supplier-fulfilment status (legacy UI): pending|received|sent|rejected|any
+		$ff_status  = isset( $raw['status'] ) ? sanitize_text_field( $raw['status'] ) : 'any';
+		if ( $ff_status !== 'any' && ! in_array( $ff_status, [ 'pending', 'received', 'sent', 'rejected' ], true ) ) {
+			$ff_status = 'any';
+		}
+
+		// Order status filter (confirmed set only) — query param 'os'
+		$allowed_statuses    = self::get_visible_statuses();
+		$order_status        = isset( $raw['os'] ) ? sanitize_text_field( $raw['os'] ) : 'any';
+		if ( 'any' !== $order_status && ! in_array( $order_status, $allowed_statuses, true ) ) {
+			$order_status = 'any';
+		}
+		$order_status_choices = self::get_supplier_status_choices();
+
 		$paged   = isset( $raw['paged'] ) ? max( 1, (int) $raw['paged'] ) : 1;
 		$perpage = isset( $raw['per_page'] ) ? max( 1, min( 50, (int) $raw['per_page'] ) ) : 10;
 		$q       = isset( $raw['wcsm_q'] ) ? sanitize_text_field( $raw['wcsm_q'] ) : '';
 
-		// New generic column-driven controls
+		// Column-driven controls
 		$filter_in = ( isset( $raw['wcsm_f'] ) && is_array( $raw['wcsm_f'] ) ) ? $raw['wcsm_f'] : [];
 		$sort_by   = isset( $raw['wcsm_sort'] ) ? sanitize_key( $raw['wcsm_sort'] ) : '';
 		$sort_dir  = isset( $raw['wcsm_dir'] ) && strtolower( $raw['wcsm_dir'] ) === 'desc' ? 'desc' : 'asc';
@@ -88,12 +169,14 @@ class SupplierOrdersEndpoint {
 		$to   = ( is_string( $to_raw )   && preg_match( '/^\d{4}-\d{2}-\d{2}$/', $to_raw ) )   ? $to_raw   : '';
 
 		// ---------- Order query base ----------
+		$statuses = ( 'any' === $order_status ) ? $allowed_statuses : [ $order_status ];
+
 		$args = [
 			'limit'      => $perpage,
 			'paginate'   => true,
 			'paged'      => $paged,
 			'type'       => 'shop_order',
-			'status'     => array_keys( wc_get_order_statuses() ),
+			'status'     => $statuses, // ← only confirmed/allowed statuses
 			'meta_query' => [
 				[
 					'key'     => Utils::META_ORDER_SUPPLIERS,
@@ -128,21 +211,17 @@ class SupplierOrdersEndpoint {
 		// ---------- Decide manual filtering/sorting ----------
 		$needs_manual = false;
 
-		// non-date filters present?
 		foreach ( (array) $filter_in as $key => $val ) {
 			if ( $key === 'order-date' ) { continue; }
 			if ( $val === '' || $val === [] ) { continue; }
 			$needs_manual = true; break;
 		}
-		// sorting by custom column?
 		if ( $sort_by && isset( $columns[ $sort_by ] ) && $sort_by !== 'order-date' ) {
 			$needs_manual = true;
 		}
-		// fulfilment status filter requires in-PHP filter
-		if ( in_array( $status, [ 'pending', 'received', 'sent', 'rejected' ], true ) ) {
+		if ( in_array( $ff_status, [ 'pending', 'received', 'sent', 'rejected' ], true ) ) {
 			$needs_manual = true;
 		}
-		// free-form search requires manual work too
 		if ( $q !== '' ) {
 			$needs_manual = true;
 		}
@@ -158,7 +237,6 @@ class SupplierOrdersEndpoint {
 
 		// ---------- Fetch & Filter ----------
 		if ( $needs_manual ) {
-			// Pull candidates by supplier/date only (cheap pre-filter)
 			$candidate_args = $args;
 			$candidate_args['limit']    = -1;
 			$candidate_args['paginate'] = false;
@@ -168,13 +246,12 @@ class SupplierOrdersEndpoint {
 			$orders = wc_get_orders( $candidate_args );
 			$orders = is_array( $orders ) ? $orders : [];
 
-			// A) Legacy text search (id/billing + item names)
+			// A) Free text search
 			if ( $q !== '' ) {
 				$needle = ltrim( trim( $q ), '#' );
 				$orders = array_values( array_filter(
 					$orders,
 					static function( $o ) use ( $needle ) {
-						// match fields
 						$field_hit = false;
 						$field_hit = $field_hit || stripos( (string) $o->get_id(), $needle ) !== false;
 						$field_hit = $field_hit || stripos( (string) $o->get_billing_first_name(), $needle ) !== false;
@@ -183,7 +260,6 @@ class SupplierOrdersEndpoint {
 						$field_hit = $field_hit || stripos( (string) $o->get_billing_company(), $needle ) !== false;
 						$field_hit = $field_hit || stripos( (string) $o->get_billing_phone(), $needle ) !== false;
 
-						// match line items names
 						if ( ! $field_hit ) {
 							foreach ( $o->get_items( 'line_item' ) as $li ) {
 								if ( stripos( $li->get_name(), $needle ) !== false ) {
@@ -197,21 +273,21 @@ class SupplierOrdersEndpoint {
 			}
 
 			// B) Supplier-fulfilment status (pending/received/sent/rejected)
-			if ( in_array( $status, [ 'pending', 'received', 'sent', 'rejected' ], true ) ) {
+			if ( in_array( $ff_status, [ 'pending', 'received', 'sent', 'rejected' ], true ) ) {
 				$orders = array_values(
 					array_filter(
 						$orders,
-						static function ( $order ) use ( $supplier_id, $status ) {
+						static function ( $order ) use ( $supplier_id, $ff_status ) {
 							$ff = Utils::get_fulfilment( $order );
 							return isset( $ff[ $supplier_id ]['status'] )
-								? ( $ff[ $supplier_id ]['status'] === $status )
-								: ( $status === 'pending' ); // no record => treat as pending
+								? ( $ff[ $supplier_id ]['status'] === $ff_status )
+								: ( $ff_status === 'pending' ); // no record => treat as pending
 						}
 					)
 				);
 			}
 
-			// C) New column-driven filters wcsm_f[<key>]...
+			// C) Column-driven filters
 			foreach ( (array) $filter_in as $key => $needle ) {
 				if ( $key === 'order-date' ) { continue; } // already in date_query
 				if ( ! isset( $columns[ $key ] ) ) { continue; }
@@ -254,7 +330,6 @@ class SupplierOrdersEndpoint {
 							return $ok;
 						}
 
-						// search (or generic true)
 						$hay = is_scalar( $raw ) ? (string) $raw : '';
 						$nd  = is_string( $needle ) ? $needle : '';
 						return $nd === '' ? true : ( stripos( $hay, $nd ) !== false );
@@ -274,7 +349,6 @@ class SupplierOrdersEndpoint {
 						$type   = $col['type']   ?? 'text';
 						$format = $col['format'] ?? '';
 
-						// Normalize by type/format
 						if ( $type === 'date' ) {
 							$ra = $ra instanceof \WC_DateTime ? $ra->getTimestamp() : ( is_numeric( $ra ) ? (int) $ra : 0 );
 							$rb = $rb instanceof \WC_DateTime ? $rb->getTimestamp() : ( is_numeric( $rb ) ? (int) $rb : 0 );
@@ -291,7 +365,6 @@ class SupplierOrdersEndpoint {
 					}
 				);
 			} else {
-				// default by date desc (like original)
 				usort(
 					$orders,
 					static function( $a, $b ) use ( $cmp_scalar ) {
@@ -316,7 +389,7 @@ class SupplierOrdersEndpoint {
 			$max_pages = is_array( $results ) ? 1 : ( $results->max_num_pages ?? 1 );
 		}
 
-		// If nothing found, backfill recent orders to ensure index meta exists, then re-run once.
+		// If nothing found, backfill recent orders for this supplier, then try once more.
 		if ( empty( $orders ) ) {
 			self::backfill_recent_orders_for_supplier( $supplier_id, 120 );
 
@@ -347,20 +420,23 @@ class SupplierOrdersEndpoint {
 		// Build wcsm_f param compactly (only non-empty parts)
 		$wcsm_f_clean = [];
 		foreach ( (array) $filter_in as $k => $v ) {
-			if ( $k === 'order-date' ) { continue; } // already split out to legacy from/to for nice URLs
+			if ( $k === 'order-date' ) { continue; }
 			if ( $v === '' || $v === [] ) { continue; }
 			$wcsm_f_clean[ $k ] = $v;
 		}
 
 		$base_query = array_filter(
 			[
-				// legacy
-				'status'    => ( 'any' !== $status ) ? $status : null,
+				// legacy fulfilment filter
+				'status'    => ( 'any' !== $ff_status ) ? $ff_status : null,
+				// order-status filter
+				'os'        => ( 'any' !== $order_status ) ? $order_status : null,
+				// search & paging
 				'wcsm_q'    => ( '' !== $q ) ? $q : null,
 				'per_page'  => ( 10 !== $perpage ) ? $perpage : null,
 				'wcsm_from' => ( '' !== $from ) ? $from : null,
 				'wcsm_to'   => ( '' !== $to ) ? $to : null,
-				// new
+				// column sort/filter
 				'wcsm_sort' => $sort_by ?: null,
 				'wcsm_dir'  => ( $sort_by && $sort_dir === 'desc' ) ? 'desc' : null,
 				'wcsm_f'    => ! empty( $wcsm_f_clean ) ? $wcsm_f_clean : null,
@@ -375,12 +451,16 @@ class SupplierOrdersEndpoint {
 				'orders'       => $orders,
 				'supplier_id'  => $supplier_id,
 				'controls'     => [
-					'status'    => $status,
+					// fulfilment status (legacy)
+					'status'                => $ff_status,
+					// order-status filter pieces
+					'order_status'          => $order_status,
+					'order_status_choices'  => $order_status_choices,
+
 					'wcsm_q'    => $q,
 					'per_page'  => $perpage,
 					'wcsm_from' => $from,
 					'wcsm_to'   => $to,
-					// expose new bits to the template too (optional)
 					'wcsm_f'    => $filter_in,
 					'wcsm_sort' => $sort_by,
 					'wcsm_dir'  => $sort_dir,
@@ -391,6 +471,7 @@ class SupplierOrdersEndpoint {
 					'base'        => $base_url,
 					'total_items' => isset( $total ) ? (int) $total : 0,
 				],
+				'endpoint_url' => $endpoint_url,
 			]
 		);
 	}
@@ -430,25 +511,17 @@ class SupplierOrdersEndpoint {
 			return;
 		}
 
-		// Allowed statuses
-		// phpcs:ignore WordPress.Security.NonceVerification.Missing
+		// Allowed supplier-fulfilment statuses
 		$allowed_status = [ 'pending', 'received', 'sent', 'rejected' ];
 		$status = isset( $_POST['wcsm_status'] ) ? sanitize_text_field( $_POST['wcsm_status'] ) : 'pending';
 		if ( ! in_array( $status, $allowed_status, true ) ) {
 			$status = 'pending';
 		}
-		// phpcs:ignore WordPress.Security.NonceVerification.Missing
 		$carrier = isset( $_POST['wcsm_carrier'] ) ? sanitize_text_field( $_POST['wcsm_carrier'] ) : '';
-		// phpcs:ignore WordPress.Security.NonceVerification.Missing
 		$number  = isset( $_POST['wcsm_tracking'] ) ? sanitize_text_field( $_POST['wcsm_tracking'] ) : '';
-		// phpcs:ignore WordPress.Security.NonceVerification.Missing
 		$url     = isset( $_POST['wcsm_url'] ) ? esc_url_raw( $_POST['wcsm_url'] ) : '';
-		// phpcs:ignore WordPress.Security.NonceVerification.Missing
 		$notes   = isset( $_POST['wcsm_notes'] ) ? sanitize_textarea_field( $_POST['wcsm_notes'] ) : '';
 
-		/**
-		 * Capture old state → update → capture new state → trigger mailer hook.
-		 */
 		$before_all = \WCSM\Orders\Utils::get_fulfilment( $order );
 		$old_for_me = $before_all[ $supplier_id ] ?? [];
 
@@ -516,7 +589,7 @@ class SupplierOrdersEndpoint {
 	private static function backfill_recent_orders_for_supplier( int $supplier_id, int $days = 90 ): void {
 		$args = [
 			'limit'        => -1,
-			'status'       => array_keys( wc_get_order_statuses() ),
+			'status'       => self::get_visible_statuses(), // only confirmed/visible statuses
 			'type'         => 'shop_order',
 			'date_created' => '>' . ( new \WC_DateTime( '-' . (int) $days . ' days' ) )->date( 'Y-m-d H:i:s' ),
 			'return'       => 'objects',
@@ -529,5 +602,69 @@ class SupplierOrdersEndpoint {
 				\WCSM\Orders\Utils::ensure_supplier_index( $order );
 			}
 		}
+	}
+
+	/* ===================== Notifications ===================== */
+
+	/**
+	 * Notify suppliers when an order changes to a status we care about (admin-configurable).
+	 *
+	 * @param int        $order_id
+	 * @param string     $old_status e.g., 'processing'
+	 * @param string     $new_status e.g., 'cancelled'
+	 * @param \WC_Order  $order
+	 */
+	public static function maybe_notify_suppliers( $order_id, $old_status, $new_status, $order ): void {
+		$notify_on = self::get_notify_statuses();
+		if ( ! in_array( $new_status, $notify_on, true ) ) {
+			return;
+		}
+
+		if ( ! $order instanceof \WC_Order ) {
+			$order = wc_get_order( $order_id );
+			if ( ! $order ) return;
+		}
+
+		// Collect supplier user IDs for this order
+		$groups       = \WCSM\Orders\Utils::group_items_by_supplier( $order ); // [ supplier_id => [ line items... ] ]
+		$supplier_ids = array_keys( (array) $groups );
+		if ( empty( $supplier_ids ) ) return;
+
+		$site_name = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
+		$subject = sprintf(
+			/* translators: 1: site name, 2: order number, 3: new status */
+			__( '[%1$s] Order #%2$s is now %3$s', 'wc-supplier-manager' ),
+			$site_name,
+			$order->get_order_number(),
+			$new_status
+		);
+
+		$body_lines = [];
+		$body_lines[] = sprintf( __( 'Order #%s status changed: %s → %s', 'wc-supplier-manager' ), $order->get_order_number(), $old_status, $new_status );
+		$body_lines[] = '';
+		$body_lines[] = __( 'This order includes items you are assigned to fulfil.', 'wc-supplier-manager' );
+		$body_lines[] = '';
+		$body_lines[] = admin_url( sprintf( 'post.php?post=%d&action=edit', $order->get_id() ) );
+
+		// Build recipients
+		$emails = [];
+		foreach ( $supplier_ids as $uid ) {
+			$user = get_user_by( 'id', (int) $uid );
+			if ( $user && is_email( $user->user_email ) ) {
+				$emails[] = $user->user_email;
+			}
+		}
+		$emails = array_unique( array_filter( $emails ) );
+
+		/**
+		 * Filters to customize supplier notice.
+		 */
+		$subject = apply_filters( 'wcsm_supplier_status_notice_subject', $subject, $order, $new_status, $old_status );
+		$message = apply_filters( 'wcsm_supplier_status_notice_message', implode( "\n", $body_lines ), $order, $new_status, $old_status );
+		$emails  = apply_filters( 'wcsm_supplier_status_notice_recipients', $emails, $order, $new_status, $old_status );
+
+		if ( empty( $emails ) ) return;
+
+		wp_mail( $emails, $subject, $message );
 	}
 }
