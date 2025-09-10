@@ -1,6 +1,6 @@
 *** Changelog ***
 
-= 1.1.1 - 2025-09-09 =
+= 1.2.0 - 2025-09-09 =
 * New - Filter by supplier in WP Admin products table
 * New - Supplier Column in WP Admin products table
 
