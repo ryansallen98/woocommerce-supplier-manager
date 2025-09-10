@@ -21,11 +21,24 @@ class Plugin
 				}
 			});
 
+			// Supplier company info
+			\WCSM\Admin\Users\SupplierCompanyInfo::init();
+
 			// Product list column
 			\WCSM\Admin\Product\SupplierListColumn::init();
 
 			// Product pricing
 			\WCSM\Admin\Product\SupplierPricing::init();
+
+			// Settings menu + tabs
+			\WCSM\Admin\Settings\Menu::init();
+
+			// General settings hooks
+			\WCSM\Admin\Settings\Tabs\General::hooks();
+
+			// OrdersDashboard needs its runtime filter + save handler:
+			\WCSM\Admin\Settings\Tabs\OrdersDashboard::init_runtime_filters();
+			add_action('admin_post_wcsm_save_supplier_columns', [\WCSM\Admin\Settings\Tabs\OrdersDashboard::class, 'handle_save']);
 		}
 
 		\WCSM\Emails\Mailer::init();

@@ -30,6 +30,3 @@ if ( is_admin() ) {
         $updateChecker->getVcsApi()->enableReleaseAssets();
     }
 }
-
-// Initialize Supplier Settings
-\WCSM\Admin\SupplierSettings::init();
