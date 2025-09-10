@@ -9,6 +9,9 @@ class Plugin
 {
 	public static function init()
 	{
+		// Init runtime filters for OrdersDashboard tab
+		\WCSM\Admin\Settings\Tabs\OrdersDashboard::init_runtime_filters();
+
 		if (is_admin()) {
 			// Always available
 			\WCSM\Admin\Product\QuickEdit::init();
@@ -36,8 +39,7 @@ class Plugin
 			// General settings hooks
 			\WCSM\Admin\Settings\Tabs\General::hooks();
 
-			// OrdersDashboard needs its runtime filter + save handler:
-			\WCSM\Admin\Settings\Tabs\OrdersDashboard::init_runtime_filters();
+			// OrdersDashboard save handler:
 			add_action('admin_post_wcsm_save_supplier_columns', [\WCSM\Admin\Settings\Tabs\OrdersDashboard::class, 'handle_save']);
 		}
 
