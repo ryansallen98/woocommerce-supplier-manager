@@ -21,7 +21,10 @@ class Plugin
 				}
 			});
 
+			// Product list column
+			\WCSM\Admin\Product\SupplierListColumn::init();
 
+			// Product pricing
 			\WCSM\Admin\Product\SupplierPricing::init();
 		}
 
