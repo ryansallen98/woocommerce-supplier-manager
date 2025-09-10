@@ -1,5 +1,15 @@
 *** Changelog ***
 
+= 1.3.0 - 2025-09-10 =
+* New - Ability to toggle what orders are visible, filterable and sortable for the Supplier Orders table via order status.  
+* Tweak - Suppliers get an email notification when an order status changes to refunded or cancelled.
+* Tweak - Restricted supplier orders to only show and filter confirmed statuses.
+* Tweak - Supplier name in all selects/dropdowns in the WP Admin now reflect the supplier display name chosen by the admin.
+* New - Add general settings tab/page with settings to change global supplier names; Company Name, Full Name, Wordpress Display Name...
+* Tweak - Move supplier order column controls to Orders Dashboard tab.
+* New - Add tabs to supplier settings for more options and better navigation.
+* New - Add company information fields to users with the supplier role.
+
 = 1.2.1 - 2025-09-10 =
 * Fix - Fix crashing bug on supplier products dashboard page
 
