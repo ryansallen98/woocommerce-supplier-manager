@@ -6,13 +6,15 @@ use WCSM\Support\OrdersTable;
 if ( ! defined( 'ABSPATH' ) ) exit;
 
 class OrdersDashboard {
-	const OPTION_KEY = 'wcsm_supplier_columns';
-	const NONCE      = 'wcsm_save_supplier_columns';
+	const OPTION_KEY_COLUMNS          = 'wcsm_supplier_columns';
+	const OPTION_KEY_STATUSES_VISIBLE = 'wcsm_supplier_visible_statuses';
+	const OPTION_KEY_STATUSES_NOTIFY  = 'wcsm_supplier_notify_statuses';
+
+	const NONCE = 'wcsm_save_supplier_columns';
 
 	public static function help_content() : array {
-		// Your original Help tab content packaged for Menu::add_screen_help()
 		return [
-			'content' => 
+			'content' =>
 				'<p><strong>' . esc_html__( 'Adding custom columns to the Supplier Orders table', 'wc-supplier-manager' ) . '</strong></p>' .
 				'<p>' . esc_html__( 'Hook the wcsm_supplier_orders_columns filter and register your column. Define label, type, and either a renderer or a value callback. Type can be text, number, date, enum, or action. If you set filterable/ sortable, the admin toggles on this page will enable/disable them.', 'wc-supplier-manager' ) . '</p>' .
 				'<pre><code>' . esc_html( self::example_column_code() ) . '</code></pre>' .
@@ -32,13 +34,18 @@ class OrdersDashboard {
 	}
 
 	public static function init_runtime_filters() : void {
-		// Keep your original front-end application of saved settings
 		add_filter( 'wcsm_supplier_orders_columns', [ __CLASS__, 'apply_settings' ], 50 );
 	}
 
 	public static function render() : void {
-		$columns = self::get_all_columns_for_admin();
-		$saved   = self::get_saved();
+		$columns          = self::get_all_columns_for_admin();
+		$saved_columns    = self::get_saved_columns();
+
+		// Order status controls (pulled from Woo core)
+		$wc_statuses      = wc_get_order_statuses(); // [ 'wc-processing' => 'Processing', ... ]
+		$visible_saved    = self::get_saved_visible_statuses();
+		$notify_saved     = self::get_saved_notify_statuses();
+
 		?>
 		<?php if ( isset( $_GET['updated'] ) ): ?>
 			<div class="updated notice is-dismissible"><p><?php esc_html_e( 'Settings saved.', 'wc-supplier-manager' ); ?></p></div>
@@ -83,7 +90,7 @@ class OrdersDashboard {
 						$type      = $col['type'] ?? 'text';
 						$native_filterable = ! empty( $col['filterable'] );
 
-						$curr      = $saved[ $key ] ?? [];
+						$curr      = $saved_columns[ $key ] ?? [];
 						$vis       = array_key_exists( 'visible', $curr )        ? (int) $curr['visible']        : (int) ( $col['visible']  ?? 1 );
 						$sortable  = array_key_exists( 'sortable', $curr )       ? (int) $curr['sortable']       : (int) ( $col['sortable'] ?? 0 );
 						$filter_on = array_key_exists( 'filter_enabled', $curr ) ? (int) $curr['filter_enabled'] : (int) ( $native_filterable ? 1 : 0 );
@@ -128,12 +135,51 @@ class OrdersDashboard {
 				</tbody>
 			</table>
 
-			<p class="submit"><button type="submit" class="button button-primary"><?php esc_html_e( 'Save changes', 'wc-supplier-manager' ); ?></button></p>
+			<hr style="margin:24px 0;">
+
+			<h2 style="margin-top:0;"><?php esc_html_e( 'Supplier order statuses', 'wc-supplier-manager' ); ?></h2>
+			<p><?php esc_html_e( 'Choose which WooCommerce order statuses are visible to suppliers, and which status changes should trigger an email notification to the assigned suppliers.', 'wc-supplier-manager' ); ?></p>
+
+			<table class="widefat striped" style="max-width:900px;">
+				<thead>
+					<tr>
+						<th><?php esc_html_e( 'Order status', 'wc-supplier-manager' ); ?></th>
+						<th style="text-align:center;"><?php esc_html_e( 'Visible to suppliers', 'wc-supplier-manager' ); ?></th>
+						<th style="text-align:center;"><?php esc_html_e( 'Notify suppliers on change to this status', 'wc-supplier-manager' ); ?></th>
+					</tr>
+				</thead>
+				<tbody>
+					<?php foreach ( $wc_statuses as $key => $label ) :
+						// $key looks like 'wc-processing' → slug 'processing'
+						$slug = preg_replace( '/^wc-/', '', $key );
+						$vis_checked    = in_array( $slug, $visible_saved, true );
+						$notify_checked = in_array( $slug, $notify_saved, true );
+					?>
+						<tr>
+							<td><strong><?php echo esc_html( $label ); ?></strong> <code style="opacity:.65;margin-left:6px;"><?php echo esc_html( $slug ); ?></code></td>
+							<td style="text-align:center;">
+								<label>
+									<input type="checkbox" name="wcsm_statuses_visible[]" value="<?php echo esc_attr( $slug ); ?>" <?php checked( $vis_checked ); ?> />
+								</label>
+							</td>
+							<td style="text-align:center;">
+								<label>
+									<input type="checkbox" name="wcsm_statuses_notify[]" value="<?php echo esc_attr( $slug ); ?>" <?php checked( $notify_checked ); ?> />
+								</label>
+							</td>
+						</tr>
+					<?php endforeach; ?>
+				</tbody>
+			</table>
+
+			<p class="submit">
+				<button type="submit" class="button button-primary"><?php esc_html_e( 'Save changes', 'wc-supplier-manager' ); ?></button>
+			</p>
 		</form>
 		<?php
 	}
 
-	/*** Below are your existing helpers, moved verbatim ***/
+	/* ---------- Helpers: example code + saved column settings ---------- */
 
 	private static function example_column_code() : string {
 		return <<<'PHP'
@@ -173,8 +219,8 @@ add_filter('wcsm_supplier_orders_columns', function(array $cols) {
 PHP;
 	}
 
-	private static function get_saved() : array {
-		$opt = get_option( self::OPTION_KEY, [] );
+	private static function get_saved_columns() : array {
+		$opt = get_option( self::OPTION_KEY_COLUMNS, [] );
 		return is_array( $opt ) ? $opt : [];
 	}
 
@@ -199,19 +245,22 @@ PHP;
 		return $cols;
 	}
 
+	/* ---------- Save handler ---------- */
+
 	public static function handle_save() : void {
 		if ( ! current_user_can( 'manage_woocommerce' ) ) {
 			wp_die( __( 'You do not have permission.', 'wc-supplier-manager' ) );
 		}
 		check_admin_referer( self::NONCE );
 
-		$in = isset( $_POST['wcsm_cols'] ) && is_array( $_POST['wcsm_cols'] ) ? wp_unslash( $_POST['wcsm_cols'] ) : [];
-
+		// 1) Columns table
+		$in_cols = isset( $_POST['wcsm_cols'] ) && is_array( $_POST['wcsm_cols'] ) ? wp_unslash( $_POST['wcsm_cols'] ) : [];
 		$native_cols = self::get_all_columns_for_admin();
-		$out = [];
+		$out_cols = [];
 
 		foreach ( $native_cols as $key => $col ) {
-			$row = $in[ $key ] ?? [];
+			$row = $in_cols[ $key ] ?? [];
+
 			$visible  = ! empty( $row['visible'] ) ? 1 : 0;
 
 			$type     = $col['type'] ?? 'text';
@@ -221,14 +270,31 @@ PHP;
 			$native_filterable = ! empty( $col['filterable'] );
 			$filter_enabled    = ( $native_filterable && ! empty( $row['filter_enabled'] ) ) ? 1 : 0;
 
-			$out[ $key ] = [
+			$out_cols[ $key ] = [
 				'visible'        => $visible,
 				'sortable'       => $sortable,
 				'filter_enabled' => $filter_enabled,
 			];
 		}
+		update_option( self::OPTION_KEY_COLUMNS, $out_cols, false );
 
-		update_option( self::OPTION_KEY, $out, false );
+		// 2) Status tables (visible + notify)
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing
+		$in_visible = isset( $_POST['wcsm_statuses_visible'] ) ? (array) wp_unslash( $_POST['wcsm_statuses_visible'] ) : [];
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing
+		$in_notify  = isset( $_POST['wcsm_statuses_notify'] )  ? (array) wp_unslash( $_POST['wcsm_statuses_notify'] )  : [];
+
+		// Sanitize to valid slugs present in wc_get_order_statuses()
+		$valid_slugs = array_map(
+			static function( $key ){ return preg_replace( '/^wc-/', '', $key ); },
+			array_keys( wc_get_order_statuses() )
+		);
+
+		$vis_clean = array_values( array_intersect( $valid_slugs, array_map( 'sanitize_key', $in_visible ) ) );
+		$not_clean = array_values( array_intersect( $valid_slugs, array_map( 'sanitize_key', $in_notify ) ) );
+
+		update_option( self::OPTION_KEY_STATUSES_VISIBLE, $vis_clean, false );
+		update_option( self::OPTION_KEY_STATUSES_NOTIFY,  $not_clean, false );
 
 		wp_safe_redirect( add_query_arg( [
 			'page'    => \WCSM\Admin\Settings\Menu::PAGE_SLUG,
@@ -238,8 +304,10 @@ PHP;
 		exit;
 	}
 
+	/* ---------- Runtime application of saved column settings ---------- */
+
 	public static function apply_settings( array $columns ) : array {
-		$saved = self::get_saved();
+		$saved = self::get_saved_columns();
 
 		foreach ( $columns as $key => &$col ) {
 			$orig_filterable = ! empty( $col['filterable'] );
@@ -264,5 +332,23 @@ PHP;
 		unset( $col );
 
 		return $columns;
+	}
+
+	/* ---------- Public getters for use elsewhere (e.g., endpoint) ---------- */
+
+	/**
+	 * Returns array of slugs (e.g., ['processing','on-hold','completed'])
+	 */
+	public static function get_saved_visible_statuses() : array {
+		$vals = get_option( self::OPTION_KEY_STATUSES_VISIBLE, [] );
+		return is_array( $vals ) ? array_values( array_unique( array_map( 'sanitize_key', $vals ) ) ) : [];
+	}
+
+	/**
+	 * Returns array of slugs (e.g., ['cancelled','refunded'])
+	 */
+	public static function get_saved_notify_statuses() : array {
+		$vals = get_option( self::OPTION_KEY_STATUSES_NOTIFY, [] );
+		return is_array( $vals ) ? array_values( array_unique( array_map( 'sanitize_key', $vals ) ) ) : [];
 	}
 }
