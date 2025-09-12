@@ -41,6 +41,9 @@ class Plugin
 
 			// OrdersDashboard save handler:
 			add_action('admin_post_wcsm_save_supplier_columns', [\WCSM\Admin\Settings\Tabs\OrdersDashboard::class, 'handle_save']);
+
+			// Supplier index rebuilder (AJAX)
+			add_action('admin_init', function(){ \WCSM\Admin\Tools\SupplierIndexRebuilder::init(); });
 		}
 
 		\WCSM\Emails\Mailer::init();
